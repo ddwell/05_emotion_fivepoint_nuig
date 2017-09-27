@@ -3,14 +3,61 @@
 
 # # Training Regression on 5point CrowdFlower data
 
-# In[239]:
+# In[83]:
 
-emoNames = ['confident','excited','happy', 'surprised']
+import numpy as np
+import pandas as pd
+import csv
+import math, itertools
+import os
+import subprocess
 
-# emoNames = ['sadness', 'disgust', 'surprise', 'anger', 'fear', 'joy']
+import matplotlib.pyplot as plt
+
+from multiprocessing import Pool, Manager
+
+from collections import Counter
+from stop_words import get_stop_words
+import natsort
+from natsort import natsorted
+
+from scipy import spatial
+from scipy.stats import pearsonr, spearmanr
+
+from sklearn.svm import SVR, LinearSVR
+from sklearn.externals import joblib
+from sklearn.model_selection import cross_val_predict, cross_val_score
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.metrics import r2_score, f1_score 
+from sklearn.metrics import classification_report, precision_recall_fscore_support
+from sklearn.feature_extraction.text import CountVectorizer
+
+from imblearn.over_sampling import RandomOverSampler
+
+from keras.preprocessing import sequence
+from keras.utils.np_utils import to_categorical
+from keras.models import Sequential,load_model, model_from_json
+from keras.layers import Dense, Activation, Embedding, Bidirectional, Dropout, LSTM
+from keras.regularizers import l2
+import keras.backend as K
+
+from theano import function
+
+import warnings
 
 
 # In[2]:
+
+moduleName = "fivePointRegression"
+repositoryPath = '/home/vlaand/IpythonNotebooks/05_emotion_fivepoint_nuig'
+
+directory = '/home/vlaand/IpythonNotebooks/05_emotion_fivepoint_nuig'
+
+emoNames = ['confident','excited','happy', 'surprised']
+# emoNames = ['sadness', 'disgust', 'surprise', 'anger', 'fear', 'joy']
+
+
+# In[3]:
 
 from nltk.tokenize import TweetTokenizer
 import nltk.tokenize.casual as casual
@@ -24,7 +71,7 @@ def preprocess_tweet(text):
     text = text.replace('\t','')
     text = text.replace('< ','<').replace(' >','>')
     text = text.replace('):', '<sadface>').replace('(:', '<smile>')
-    text = text.replace(" 't", "t")
+    text = text.replace(" 't", "t")#.replace('#','')
     return text
 
 def tokenise_tweet(text):
@@ -35,7 +82,7 @@ def tokenise_tweet(text):
 tokenise_tweet.regexes = setupRegexes('twitterProAna')
 
 
-# In[204]:
+# In[6]:
 
 from collections import defaultdict
 import numpy as np
@@ -87,7 +134,7 @@ tweets,labels = _read_csv(filename = "/home/vlaand/IpythonNotebooks/cf-5point-da
 
 # ## WORD FREQUENCIES
 
-# In[210]:
+# In[7]:
 
 from collections import Counter
 from stop_words import get_stop_words
@@ -159,7 +206,7 @@ _plot_word_frequencies(wordFrequencies, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY
 tweets_reduced = _reduce_text(tweets, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY_TRESHOLD)
 
 
-# In[211]:
+# In[8]:
 
 wordFrequencies2 = _get_unique_tokens(tweets_reduced)
 _plot_word_frequencies(wordFrequencies2, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY_TRESHOLD)
@@ -167,17 +214,17 @@ _plot_word_frequencies(wordFrequencies2, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENC
 
 # ## N-GRAMS
 
-# In[213]:
+# In[9]:
 
 from sklearn.feature_extraction.text import CountVectorizer
-NGRAM_VALUE = 5
+NGRAM_VALUE = 4
 
 print('NGRAM_VALUE =',NGRAM_VALUE)
 
 
 # #### Save ngramizer
 
-# In[215]:
+# In[10]:
 
 def _save_ngramizer(filename = 'ngramizer.dump'):
     checkFolder(filename)
@@ -194,7 +241,7 @@ _save_ngramizer(filename = '/home/vlaand/IpythonNotebooks/cf-5point-data/5gramiz
 
 # #### Load ngramizer
 
-# In[216]:
+# In[12]:
 
 def _load_ngramizer(filename = 'ngramizer.dump'):
     checkFolder(filename)
@@ -203,7 +250,7 @@ def _load_ngramizer(filename = 'ngramizer.dump'):
     return ngramizer
 
 # ngramizer = _load_ngramizer('/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/hashTagClassification/ngramizers/'+str(NGRAM_VALUE)+'gramizer.dump')
-ngramizer = _load_ngramizer('/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/hashTagClassification/ngramizers/ngramizer.dump')
+# ngramizer = _load_ngramizer('/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/hashTagClassification/ngramizers/ngramizer.dump')
 
 vec = ngramizer.transform(tweets_reduced).toarray()
 print(len(vec), len(vec[0]))
@@ -211,7 +258,7 @@ print(len(vec), len(vec[0]))
 
 # ### NGRAM FREQUENCY
 
-# In[217]:
+# In[13]:
 
 from natsort import natsorted
     
@@ -231,86 +278,184 @@ show()
 
 # ## WORD EMBEDDINGS
 
-# In[219]:
+# In[14]:
+
+def _read_csv_we(filename = "data.csv"):
+    
+    embedding_index = {}
+
+    for row in pd.read_csv(filepath_or_buffer=filename, sep = ' ', header=None).iterrows():
+        word, coefs = row[1][0], np.asarray(row[1][1:])
+        embedding_index[word] = coefs
+        
+    print('we vectors loaded from <'+filename+'>')
+    print('\t'+str(len(embedding_index))+'\tentries')    
+        
+    return embedding_index
+
+
+def _load_original_vectors(filename = 'wordvectors-glove.twitter.27B.100d.txt', sep = ' ', wordFrequencies = None):
+
+    Dictionary, Indices  = {},{}
+    i=1
+    
+    for line in open(filename, 'rb'): 
+        values = line.decode('utf-8').split(sep)
+        
+        token = values[0]
+        token_vector = np.array(values[1:], dtype = 'float32')   
+        if(wordFrequencies):
+            if(token in wordFrequencies):                
+                Dictionary[token] = token_vector
+                Indices.update({token:i})
+                i+=1
+        else:
+            Dictionary[token] = token_vector
+            Indices.update({token:i})
+            i+=1
+            
+    print('we vectors loaded from <'+filename+'>')
+    print('\t'+str(len(Dictionary))+' entries') 
+    return(Dictionary, Indices)
+
+def pretrainedEmbeddings(EmbeddingPath):
+        embedding_index = {}
+        
+        with open(EmbeddingPath) as f:
+            next(iter(f))
+            embedding_wordsList = []
+            for line in f:
+                values = line.split(" ")
+                word = values[0]
+                coefs = np.asarray(values[1:])
+                embedding_index[word] = coefs
+                embedding_wordsList.append(word)
+        
+        return (embedding_index, embedding_wordsList)
+
+def _texts_to_sequences(train_tweets):
+    
+    train_sequences = []
+    for i,tweet in enumerate(train_tweets): 
+        tw = []
+        for token in tweet.split():
+            try:
+                tw.append(Indices[token])
+            except:
+                continue
+        tw.extend([0]*( maxlen-len(tw)) )
+        train_sequences.append(np.asarray(tw))
+    return train_sequences
+
+def _data_to_lists(dataTrain):    
+    
+    train_tweets, train_labels = [], []
+    print('stacking data to lists')
+    for i in dataTrain:
+        scores = []
+        for score in i[1:]:
+            if np.isnan(score):
+                scores.append( 0 )
+                print('\tWarning: Nan value present in dataset')
+            else:
+                scores.append(score-2)
+        train_labels.append(scores)
+        train_tweets.append(i[0])
+    print('data stacked to lists\n\t'+str(len(train_tweets))+' tweets\n\t'+str(len(train_labels))+' labels')
+    return train_tweets, train_labelsprint(len(Dictionary),'tokens in we')
+
+
+# In[17]:
 
 EMBEDDINGS_DIM = 100
+WORD_FREQUENCY_TRESHOLD = 2
 
-# def _load_original_vectors(filename = 'wordvectors-glove.twitter.27B.200d.txt', sep = ' ', wordFrequencies = None):
+_path_wordembeddings = '/home/vlaand/data/Glove/glove.twitter.27B/glove.twitter.27B.'+str(EMBEDDINGS_DIM)+'d.txt'
+# _path_wordembeddings = '/home/vlaand/data/Glove/glove.6B/glove.6B.100d.txt'
 
-#     Dictionary = {}
-    
-#     for line in open(filename, 'rb'): 
-#         line_d = line.decode('utf-8').split(sep)
+Dictionary, Indices = _load_original_vectors(
+        filename = _path_wordembeddings, 
+        sep = ' ',
+        wordFrequencies = None)#wordFrequencies) # leave wordFrequencies=None for loading the entire WE file
+
+Indices_reversed = {}
+for key in Indices.keys():
+    Indices_reversed.update({Indices[key]:key})
+
+
+# In[ ]:
+
+
+
+def dataframe_to_lists(df):
+
+    train_tweets, train_labels = [], []
+
+    for row in df.iterrows():
+        train_tweets.append(row[1][1])
+        train_labels.append(row[1][3])
         
-#         token = line_d[0]
-#         token_vector = np.array(line_d[1:], dtype = 'float32')   
-#         if(wordFrequencies):
-#             if(token in wordFrequencies):                
-#                 Dictionary[token] = token_vector
-#         else:
-#             Dictionary[token] = token_vector        
-            
-#     return(Dictionary)
+    return train_tweets, train_labels
 
-def _load_original_vectors(filename = 'glove.27B.100d.txt', sep = ' ', wordFrequencies = None, zipped = False):
-       
-        def __read_file(f):
-            Dictionary, Indices  = {},{}
-            i = 1
-            for line in f:
-                line_d = line.decode('utf-8').split(sep)
+def lists_to_vectors(train_tweets, train_labels, embedding_matrix=None):
 
-                token = line_d[0]
-                token_vector = np.array(line_d[1:], dtype = 'float32')   
-                if(wordFrequencies):
-                    if(token in wordFrequencies):                
-                        Dictionary[token] = token_vector
-                        Indices.update({token:i})
-                        i+=1
-                else:
-                    Dictionary[token] = token_vector
-                    Indices.update({token:i})
-                    i+=1
-            return(Dictionary, Indices)
-            
-        if zipped:
-            with gzip.open(filename, 'rb') as f:
-                return(__read_file(f))
-        else:
-            with open(filename, 'rb') as f:
-                return(__read_file(f))
+    train_sequences = _texts_to_sequences(train_tweets)
+    
+    if embedding_matrix==None:
+        embedding_matrix = np.zeros((len(Indices)+1, EMBEDDINGS_DIM))
 
-# wordFrequencies param is for reading the WE vectors that are present in the text
-Dictionary, Indices = _load_original_vectors(filename = '/home/vlaand/data/Glove/glove.twitter.27B/glove.twitter.27B.'+str(EMBEDDINGS_DIM)+'d.txt', sep = ' ', wordFrequencies=wordFrequencies)
-print(len(Dictionary),'tokens in we')
+    print('matrix created\n\t',embedding_matrix.shape)
+    for (word, i) in Indices.items():
+        embedding_vector = Dictionary.get(word)
+        if embedding_vector != None:
+            embedding_matrix[i] = embedding_vector.astype(np.float)
+
+    _X = sequence.pad_sequences(train_sequences, maxlen=maxlen)
+    _y = np.array(train_labels)
+
+    print(len(_X), 'train sequences loaded')
+    print('\t',_X.shape,'\n\t', _y.shape)
+    
+    return _X, _y, embedding_matrix
+
+def _get_maxlen(tweets):
+    max = 0
+    for tw in tweets:
+        if len(tw.split()) > max:
+            max = len(tw.split())
+    return max
 
 
 # # Vector transformations
 
-# In[220]:
-
-import numpy as np
-import math, itertools
-from scipy import spatial
+# In[85]:
 
 def _vectors_similarity(v1 , v2):
     return( 1 - spatial.distance.cosine(v1,v2) )
-
+def similarityVector(vector_, vectors_):
+    resVector = np.asarray([_vectors_similarity(vector_ , v_) for v_ in vectors_])
+    return np.asarray([np.max(resVector), np.mean(resVector), np.std(resVector), np.min(resVector)])
+def compareTokenToSentence(leftToken, sentence):
+    sentence_vectors = []
+    for token in sentence:
+        if token in Dictionary:
+            sentence_vectors.append(Dictionary[token])
+        else:
+            token = token.replace('#','')
+            if token in Dictionary:
+                sentence_vectors.append(Dictionary[token])
+    return similarityVector( Dictionary[leftToken], sentence_vectors)  
 def capitalRatio(tweet):
-    
         firstCap, allCap = 0, 0
         length = len(tweet)
         if length==0:
             return np.array([0,0])
-
         for i,token in enumerate(tweet.split()):
             if( token.istitle() ):
                 firstCap += 1
             elif( token.isupper() ):
                 allCap += 1
-        return(np.asarray([firstCap/length,allCap/length]))  
-        
-
+        return np.asarray([firstCap/length,allCap/length]) 
 def tweetToWordVectors(dictionary, tweet, fixedLength=False):
     output = []    
     if(fixedLength):
@@ -322,9 +467,10 @@ def tweetToWordVectors(dictionary, tweet, fixedLength=False):
     else:
          for i,token in enumerate(tweet.lower().split()):
             if token in Dictionary:
-                output.append(Dictionary[token])            
-    return(output)
-
+                output.append(Dictionary[token])
+            elif token.replace('#','') in Dictionary:
+                output.append(Dictionary[token.replace('#','')])
+    return output
 def ModWordVectors(x, mod=True):
     if(len(x) == 0):       
         if(mod):
@@ -337,109 +483,139 @@ def ModWordVectors(x, mod=True):
         xMin = np.array(m.min(0))[0]
         xMax = np.array(m.max(0))[0]
         xX = np.concatenate((xMean,xMin,xMax))
-        return(xX)
+        return xX
     else:
-        return(np.array(m.mean(0))[0])
-
+        return np.array(m.mean(0))[0]
 def bindTwoVectors(x0,x1):
-    xX = np.array(list(itertools.chain(x0,x1)),dtype='float32')
-    return(xX)   
-
+    return np.array(list(itertools.chain(x0,x1)),dtype='float32') 
 def _bind_vectors(x):
-    xX = np.concatenate(x)
-    return(xX)     
-
-def _convert_text_to_vector(tweets, tweet_original,  Dictionary, labels, ngramvec):
-    
-    X = []
-    y = []
-#     vec = ngramizer.transform(tweets).toarray()
-    vec = ngramvec
+    return np.concatenate(x)   
+def myLog10(vector):
+    for i,v in enumerate(vector):
+        if v > 0:
+            vector[i] = np.log(v)
+    return vector            
+def _convert_text_to_vector(tweets,  Dictionary, labels, ngramizer, lstmLayer=None, emotion = None):
+    _X = []
+    _y = []
+    vec = ngramizer.transform(tweets).toarray()
     for i, t in enumerate(tweets):
-#         print(i)
-        embeddingsVector = ModWordVectors(tweetToWordVectors(Dictionary,tweets[i]))
-        capitalRatioVector = capitalRatio(tweet_original[i])
+        if lstmLayer==None:
+            embeddingsVector = ModWordVectors(tweetToWordVectors(Dictionary,tweets[i]))
+        else:
+            embeddingsVector_lstm = lstmLayer[i]
+            embeddingsVector = ModWordVectors(tweetToWordVectors(Dictionary,tweets[i]))
+                
+#         capitalRatioVector = capitalRatio(dfs[st][emoNames[EMOTION]][i])
+#         simVector = compareTokenToSentence(leftToken = emoNames[EMOTION], sentence = t)
+
         ngramVector = vec[i]
-        X.append( _bind_vectors((ngramVector, capitalRatioVector, embeddingsVector))  )
-        y.append(labels[i])
-    
-    return(np.asarray(X), np.asarray(y))
+#         _X.append( ngramVector )
+#         _X.append(( _bind_vectors((ngramVector, embeddingsVector_lstm))  )
+        _X.append( _bind_vectors((ngramVector,embeddingsVector))  )
+        
+        if emotion == None:
+            _y.append( labels[i] )
+        else:
+            _y.append( labels[i][emotion] )
+    return(np.asarray(_X), np.asarray(_y))
+
+
+### Exctract activations
+# for j,i in enumerate(lstmTrained.layers):
+#     print(j,i)
+
+# get_activations = function([lstmTrained.layers[0].input], lstmTrained.layers[1].output, allow_input_downcast=True)
+# activations = get_activations(lstm_X_train) # same result as above
 
 
 # # SVM
 
-# In[221]:
+# In[86]:
 
-EMOTION = 0
+normalize_labels = True
+svc_X, svc_y = [[],[],[],[]], [[],[],[],[]]
 
-X, y = _convert_text_to_vector(tweets = tweets_reduced, tweet_original = tweets, Dictionary = Dictionary,labels = labels, ngramvec=vec)
-
-print('chosen emotion:', emoNames[EMOTION])
-print('data shape:  ',X.shape)
-print('label shape: ',y.shape)
-# y = [y_[EMOTION] for y_ in y]
+for j, emo in enumerate(emoNames):
+    EMOTION = j
+    svc_X[j], svc_y[j] = _convert_text_to_vector(
+        tweets = tweets_reduced,
+        labels = labels, Dictionary = Dictionary, ngramizer = ngramizer,  
+        emotion = EMOTION,
+        lstmLayer = None#get_activations(lstm_X_train)        
+    )
+    if normalize_labels:
+        svc_y[j] /= 4
     
+    print('emotion:', emoNames[EMOTION])
+    print('\t', svc_X[j].shape, svc_y[j].shape)  
+
+
+# In[89]:
+
+print("labels range: [%.1f : %.1f]" % (min(np.concatenate(svc_y)), max(np.concatenate(svc_y))))
 
 
 # ## GridSearch
 
-# In[34]:
+# In[158]:
 
-from sklearn.svm import SVR, LinearSVR
-from sklearn.externals import joblib
-from sklearn.metrics import f1_score, r2_score
-from sklearn.cross_validation import cross_val_predict, cross_val_score, train_test_split
-from collections import Counter
-from multiprocessing import Pool
-import warnings
+from sklearn.metrics import make_scorer
+
+def scorer_pearson(ground_truth, predictions):
+    return pearsonr(ground_truth, predictions)[0]
+
+ftwo_scorer = make_scorer(scorer_pearson)
+ftwo_scorer
+
+
+# In[161]:
 
 warnings.simplefilter('ignore')
 
 ESTIMATOR = 'LinearSVR'
+# ESTIMATOR = 'SVR'
 cv_folds = 5
-# NGRAM_VALUE = 4
 
-def _greed_search(EMOTION=0): 
-    y2 = []
-    for ly in y:
-        if not np.isnan(ly[EMOTION]):        
-            y2.append(float(ly[EMOTION])/4)
-        else:
-            y2.append(2.0)
-    y2 = np.asarray(y2)       
+def _greed_search():     
 
     list_acc = []    
     list_val = []
+                
+    epsilon = 0.001    
+    if(ESTIMATOR == 'LinearSVR'): 
+        gamma_array = [1.0]
+    elif(ESTIMATOR == 'SVR'):
+        gamma_array = [0.001,0.01,0.1]
         
-    if(ESTIMATOR == 'LinearSVR'):                             
-        epsilon = 0.001
-        gamma=1.0
-        C = 0.01
-        for tol in [1e-6,1e-4]:
-            #for C in [0.01,0.1,1.0]:
-                cvs = cross_val_score(estimator = LinearSVR(C=C, tol=tol), X=X, y=y2, cv=cv_folds, n_jobs=cv_folds, scoring='r2') 
-#                 cvs = [0.5,0.5,0.5]
+    c_array = [0.0001,0.001,0.01,0.1,1.0]
+#     c_array = [0.0001]
+    print("estimator, emotion, \tC, gamma, tol, score")
+
+    for C in c_array:
+        for gamma in gamma_array:              
+            for tol in [1e-4]:
+                cvs = cross_val_score(estimator = LinearSVR(C=C, tol=tol), X=svc_X[EMOTION], y=svc_y[EMOTION], cv=cv_folds, n_jobs=cv_folds, scoring=ftwo_scorer) 
                 meanScore = np.mean(np.asarray(cvs))
-                list_val.append([emoNames[EMOTION],meanScore,ESTIMATOR, C, gamma,epsilon,tol,NGRAM_VALUE,EMBEDDINGS_DIM])
+                
+#                 if(ESTIMATOR == 'LinearSVR'): 
+#                     svcTrained = LinearSVR(C=C, tol=tol) 
+#                 elif(ESTIMATOR == 'SVR'): 
+#                     svcTrained = SVR(C=C, tol=tol,gamma=gamma) 
+                    
+#                 svcTrained.fit(svc_X[EMOTION], svc_y[EMOTION])
+
+#                 meanScore = r2_score(svc_y[EMOTION] , svcTrained.predict(svc_X[EMOTION]))
+#                 prs = pearsonr(svc_y_test , svc_y_test_predict)[0]
+#                 spr = spearmanr(svc_y_test , svc_y_test_predict)[0]
+
+                list_val.append([moduleName,meanScore,ESTIMATOR, C, gamma,epsilon,tol,NGRAM_VALUE,EMBEDDINGS_DIM])
                 list_acc.append(meanScore)
-                print(emoNames[EMOTION]+': C='+str(C)+', tol='+str(tol)+', score='+str(meanScore))      
         
-    elif(ESTIMATOR == 'SVR'):                          
-        epsilon = 0.001
-#         C = 0.01
-        tol = 1e-6
-        for gamma in [0.0001,0.001,0.01,0.1,1.0,10.0]:        
-#             for tol in [1e-6,1e-5,1e-4]:
-                for C in [0.001,0.01,0.1,1.0]:                    
-#                     cvs = [0.5,0.5,0.5]
-                    cvs = cross_val_score(estimator = SVR(C=C,gamma=gamma, tol=tol), X=X, y=y2, cv=cv_folds, n_jobs=cv_folds, scoring='r2') 
-                    meanScore = np.mean(np.asarray(cvs))
-                    list_val.append([emoNames[EMOTION],meanScore,ESTIMATOR, C, gamma,epsilon,tol,NGRAM_VALUE,EMBEDDINGS_DIM])
-                    list_acc.append(meanScore)
-                    print(emoNames[EMOTION]+': C='+str(C)+', tol='+str(tol)+', score='+str(meanScore)) 
-    
+                print('%s, %s, \t%s, %s, %s, %.4f' %(ESTIMATOR, emoNames[EMOTION], str(C), str(gamma), str(tol), meanScore))     
+        
     best = np.argmax(list_acc)    
-    print(list_val[best])
+#     print(list_val[best])
     out0 = {
         'C':list_val[best][3], 
         'gamma': list_val[best][4],
@@ -449,98 +625,104 @@ def _greed_search(EMOTION=0):
         'EMBEDDINGS_DIM': list_val[best][8],
         'score': list_val[best][1]
     }
+    return {ESTIMATOR:{emoNames[EMOTION]:out0}}
 
-    return {emoNames[EMOTION]:out0}
     
 def _combine_best_results(pool_output, ESTIMATOR):
-    new_p = {ESTIMATOR:{}}   
+    new_p = {}       
     for i in pool_output:
-        new_p[ESTIMATOR].update(i)
+        new_p.update(i)   
         
-    return new_p            
+    return new_p  
 
-p = Pool(processes = len(emoNames))
-pool_output = p.map(_greed_search, [i for i in  range(len(emoNames))])  
+EMOTION = 2
+pool_output = [_greed_search()]
 
-p.close()
-p.terminate() # Terminate all processes in the Pool
+print()
+print(pool_output[0])
+
+
+# In[147]:
 
 temp_params = _combine_best_results(pool_output, ESTIMATOR)
 
 try:
-    train_params.update(temp_params)
+    train_params[ESTIMATOR].update(temp_params[ESTIMATOR])
 except:
-    train_params = temp_params
+    train_params = {}
+    train_params.update(temp_params)
+    
+train_params
 
 
-# In[229]:
+# In[104]:
 
-train_params = {'LinearSVR': {'confident': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 1.0,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-04},
-  'excited': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 1.0,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06},
-  'happy': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 1.0,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-04},
-  'surprised': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 0.01,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06}},
- 'SVR': {'confident': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 0.0001,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06},
-  'excited': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 0.01,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06},
-  'happy': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 0.01,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06},
-  'surprised': {'C': 0.01,
-   'EMBEDDINGS_DIM': 200,
-   'epsilon': 0.001,
-   'gamma': 0.01,
-   'ngrams': 4,
-   'score': 0.5,
-   'tol': 1e-06}}}
+train_params = {
+    'LinearSVR': {
+        'confident': {'C': 0.01,
+            'EMBEDDINGS_DIM': 100,
+            'epsilon': 0.001,
+            'gamma': 1.0,
+            'ngrams': 4,
+            'score': 0.08006788917747884,
+            'tol': 0.0001},
+        'excited': {'C': 0.01,
+            'EMBEDDINGS_DIM': 100,
+            'epsilon': 0.001,
+            'gamma': 1.0,
+            'ngrams': 4,
+            'score': 0.20181656813534418,
+            'tol': 0.0001},
+        'happy': {'C': 0.01,
+            'EMBEDDINGS_DIM': 100,
+            'epsilon': 0.001,
+            'gamma': 1.0,
+            'ngrams': 4,
+            'score': 0.31076973883989167,
+            'tol': 0.0001},
+        'surprised': {'C': 0.001,
+            'EMBEDDINGS_DIM': 100,
+            'epsilon': 0.001,
+            'gamma': 1.0,
+            'ngrams': 4,
+            'score': -0.021827945233623081,
+            'tol': 0.0001}}}
 
 
 # ## SAVE CLASSIFIERS
 
-# In[224]:
+# In[162]:
 
-emoNames
+# ESTIMATOR = 'SVR'
+ESTIMATOR = 'LinearSVR'
+
+if ESTIMATOR == 'SVR':
+    svcTrained = SVR(C=train_params[ESTIMATOR][emoNames[EMOTION]]['C'], 
+                 tol=train_params[ESTIMATOR][emoNames[EMOTION]]['tol'], 
+                 gamma=train_params[ESTIMATOR][emoNames[EMOTION]]['gamma'],
+                 verbose=True)
+    
+else:
+    svcTrained = LinearSVR(C=train_params[ESTIMATOR][emoNames[EMOTION]]['C'], 
+                 tol=train_params[ESTIMATOR][emoNames[EMOTION]]['tol'], 
+                 verbose=True)
+    
+svcTrained.fit(svc_X[EMOTION], svc_y[EMOTION])
+print(svcTrained)
+
+       
+# def saveModelFor(model, ESTIMATOR, path='/home/vlaand/IpythonNotebooks/wassa2017/'):
+#     path = os.path.join(path,ESTIMATOR)
+#     checkFolder(path)
+#     filename = path+'.dump'
+#     checkFolder(filename)
+#     _ = joblib.dump(model, filename, compress=9)
+#     print("model saved to <%s>" % filename)
+    
+# saveModelFor(svcTrained, ESTIMATOR=ESTIMATOR, path = os.path.join(repositoryPath, moduleName, 'classifiers'))
 
 
-# In[230]:
+# In[106]:
 
 from sklearn.svm import SVR, LinearSVR
 from sklearn.externals import joblib
@@ -549,7 +731,7 @@ import os, sys
 
 SEP = '/'
 EXTENSION = '.dump'
-ESTIMATOR = 'SVR'
+ESTIMATOR = 'LinearSVR'
 SAVE_DIR = '/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/fivePointRegression/classifiers/'
 
 def ifExists(filename):
@@ -666,7 +848,7 @@ for emo in emoNames:
 
 # In[9]:
 
-models_path_htc = '/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/hashTagClassification/classifiers/LinearSVC/'
+models_path_htc = '/home/vlaand/IpythonNotebooks/senpy-plugins-NUIG/hashTagClassification/classifiers/LinearSVR/'
 
 models_htc = {}
 for emo in ['sadness', 'disgust', 'surprise', 'anger', 'fear', 'joy']:
