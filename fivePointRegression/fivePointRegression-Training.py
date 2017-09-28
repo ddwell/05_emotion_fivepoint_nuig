@@ -134,7 +134,7 @@ tweets,labels = _read_csv(filename = "/home/vlaand/IpythonNotebooks/cf-5point-da
 
 # ## WORD FREQUENCIES
 
-# In[5]:
+# In[7]:
 
 from collections import Counter
 from stop_words import get_stop_words
@@ -206,7 +206,7 @@ _plot_word_frequencies(wordFrequencies, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY
 tweets_reduced = _reduce_text(tweets, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY_TRESHOLD)
 
 
-# In[6]:
+# In[8]:
 
 wordFrequencies2 = _get_unique_tokens(tweets_reduced)
 _plot_word_frequencies(wordFrequencies2, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY_TRESHOLD)
@@ -214,7 +214,7 @@ _plot_word_frequencies(wordFrequencies2, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENC
 
 # ## N-GRAMS
 
-# In[7]:
+# In[9]:
 
 from sklearn.feature_extraction.text import CountVectorizer
 NGRAM_VALUE = 4
@@ -224,7 +224,7 @@ print('NGRAM_VALUE =',NGRAM_VALUE)
 
 # #### Save ngramizer
 
-# In[8]:
+# In[10]:
 
 def _save_ngramizer(filename = 'ngramizer.dump'):
     checkFolder(filename)
@@ -241,7 +241,7 @@ _save_ngramizer(filename = '/home/vlaand/IpythonNotebooks/cf-5point-data/5gramiz
 
 # #### Load ngramizer
 
-# In[9]:
+# In[11]:
 
 def _load_ngramizer(filename = 'ngramizer.dump'):
     checkFolder(filename)
@@ -258,7 +258,7 @@ print(len(vec), len(vec[0]))
 
 # ### NGRAM FREQUENCY
 
-# In[10]:
+# In[12]:
 
 from natsort import natsorted
     
@@ -278,7 +278,7 @@ show()
 
 # ## WORD EMBEDDINGS
 
-# In[11]:
+# In[13]:
 
 def _read_csv_we(filename = "data.csv"):
     
@@ -404,7 +404,7 @@ def _get_maxlen(tweets):
     return max
 
 
-# In[12]:
+# In[14]:
 
 EMBEDDINGS_DIM = 100
 WORD_FREQUENCY_TRESHOLD = 2
@@ -422,7 +422,7 @@ for key in Indices.keys():
     Indices_reversed.update({Indices[key]:key})
 
 
-# In[13]:
+# In[15]:
 
 meltTweets = []
 meltTweets.extend(tweets) 
@@ -437,7 +437,7 @@ wordFrequencies = _get_unique_tokens(tweets)
 _plot_word_frequencies(wordFrequencies, WORD_FREQUENCY_TRESHOLD = WORD_FREQUENCY_TRESHOLD)
 
 
-# In[14]:
+# In[16]:
 
 def plotSentenceLength(sentences):
     values = sorted([len(x.split()) for x in sentences],reverse=True)
@@ -455,7 +455,7 @@ plotSentenceLength(tweets)
 
 # # LSTM
 
-# In[206]:
+# In[17]:
 
 def matthews_correlation(y_true, y_pred):
     y_pred_pos = K.round(K.clip(y_pred, 0, 1))
@@ -506,7 +506,7 @@ def printScores(scores):
         print("%s, %.4f, %.4f, %.4f" %  (row[0],row[1],row[2],row[3],)) 
 
 
-# In[185]:
+# In[18]:
 
 EMOTION = 0
 maxlen = 30
@@ -515,7 +515,7 @@ lstm_X, lstm_y, embedding_matrix = lists_to_vectors(tweets, labels)
 lstm_y = np.asarray(labels)
 
 
-# In[186]:
+# In[19]:
 
 train, test, train, test = train_test_split(list(range(len(lstm_y))), list(range(len(lstm_y))), test_size=0.2, random_state=1337)
 
@@ -526,7 +526,7 @@ print('train data and label shape:', lstm_X_train.shape, lstm_y_train.shape)
 print('test data and label shape:', lstm_X_test.shape, lstm_y_test.shape)
 
 
-# In[106]:
+# In[20]:
 
 def oversampling(X, y):    
     ros = RandomOverSampler(ratio='auto')    
@@ -557,7 +557,7 @@ model.add(Dense(hidden_dims3, activation='softsign'))
 model.compile(loss='mean_absolute_error', optimizer='adam',metrics=['accuracy',matthews_correlation])
 
 
-# In[208]:
+# In[34]:
 
 np.random.seed(1337)
 
@@ -567,14 +567,14 @@ EMBEDDINGS_DIM = 100
 hidden_dims1 = 50
 hidden_dims2 = 25
 hidden_dims3 = 4
-nb_epoch = 15
+nb_epoch = 8
 
 scores = []
 
 lstmTrained = Sequential()
 lstmTrained.add(Embedding(len(Indices)+1,  EMBEDDINGS_DIM, weights=[embedding_matrix],
                             input_length=maxlen, trainable=False))
-lstmTrained.add(Bidirectional(LSTM(EMBEDDINGS_DIM)))
+lstmTrained.add(Bidirectional(LSTM(EMBEDDINGS_DIM, kernel_regularizer=l2(0.05))))
 # lstmTrained.add(LSTM(EMBEDDINGS_DIM, kernel_regularizer=l2(0.05)))#, return_sequences=True, W_regularizer=l2(0.02))) 
 lstmTrained.add(Dropout(0.2))
 lstmTrained.add(Dense(hidden_dims1, bias_regularizer=l2(0.01)), )
@@ -585,7 +585,7 @@ lstmTrained.compile(loss='mae', optimizer='adam', metrics=['accuracy'])#, matthe
 lstmTrained.fit(lstm_X_train, lstm_y_train, batch_size=batch_size, epochs = nb_epoch, validation_split=None)
 
 
-# In[205]:
+# In[35]:
 
 scores = regressionReport_lstm(trainedModel = lstmTrained,
                                         X_test=lstm_X_test, 
@@ -595,7 +595,7 @@ scores = regressionReport_lstm(trainedModel = lstmTrained,
 printScores(scores)     
 
 
-# In[209]:
+# In[36]:
 
 # lstmTrained.to_json()
 
@@ -644,7 +644,7 @@ def foo():
 # # SVM
 # ### Vector transformations
 
-# In[108]:
+# In[83]:
 
 def _vectors_similarity(v1 , v2):
     return( 1 - spatial.distance.cosine(v1,v2) )
@@ -726,8 +726,8 @@ def _convert_text_to_vector(tweets,  Dictionary, labels, ngramizer, lstmLayer=No
 #         simVector = compareTokenToSentence(leftToken = emoNames[EMOTION], sentence = t)
 
         ngramVector = vec[i]
-        _X.append( embeddingsVector_lstm )
-#         _X.append(( _bind_vectors((ngramVector, embeddingsVector))  ))
+#         _X.append( embeddingsVector_lstm )
+        _X.append(( _bind_vectors((ngramVector, embeddingsVector_lstm))  ))
 #         _X.append( _bind_vectors((embeddingsVector,embeddingsVector_lstm))  )
         
         if emotion == None:
@@ -745,7 +745,7 @@ get_activations = function([lstmTrained.layers[0].input], lstmTrained.layers[1].
 # activations = get_activations(lstm_X_train) # same result as above
 
 
-# In[109]:
+# In[84]:
 
 normalize_labels = True
 svc_X, svc_y = [[],[],[],[]], [[],[],[],[]]
@@ -767,9 +767,18 @@ for j, emo in enumerate(emoNames):
 print("labels range: [%.1f : %.1f]" % (min(np.concatenate(svc_y)), max(np.concatenate(svc_y))))
 
 
+# In[85]:
+
+svc_X_train, svc_y_train = [emo[train] for emo in svc_X], [emo[train] for emo in svc_y]
+svc_X_test,  svc_y_test  = [emo[test] for emo in svc_X], [emo[test] for emo in svc_y]
+
+print('train data and label shape:', svc_X_train[0].shape, svc_y_train[0].shape)
+print('test data and label shape:', svc_X_test[0].shape, svc_y_test[0].shape)
+
+
 # ### GridSearch
 
-# In[126]:
+# In[96]:
 
 from sklearn.metrics import make_scorer
 
@@ -791,10 +800,10 @@ def getScores(estimator, x, y):
 def my_scorer(estimator, x, y):
     r2, p, s = getScores(estimator, x, y)
 #     print("%.4f, %.4f, %.4f" % (r2, p, s))
-    return p
+    return s
 
 
-# In[127]:
+# In[100]:
 
 warnings.simplefilter('ignore')
 
@@ -858,7 +867,7 @@ def _combine_best_results(pool_output, ESTIMATOR):
         
     return new_p  
 
-EMOTION = 3
+EMOTION = 0
 pool_output = [_greed_search()]
 
 print()
